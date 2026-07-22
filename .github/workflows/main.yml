@@ -1,0 +1,76 @@
+name: Data Sanity Check and Cleanup
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '*.xlsx'
+      - 'data_sanity_check.py'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  sanity-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas openpyxl numpy
+    
+    - name: Run data sanity check
+      run: python data_sanity_check.py
+    
+    - name: Upload cleaned data
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: cleaned-data
+        path: cleaned_data/
+        retention-days: 30
+    
+    - name: Upload sanity check report
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: sanity-check-reports
+        path: reports/
+        retention-days: 90
+    
+    - name: Archive results
+      if: always()
+      run: |
+        tar -czf sanity-check-results-${{ github.run_id }}.tar.gz cleaned_data/ reports/ || true
+    
+    - name: Create summary
+      if: always()
+      run: |
+        echo "## Data Sanity Check Results 📊" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Workflow Run:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Files Processed" >> $GITHUB_STEP_SUMMARY
+        echo "- customer_master.xlsx" >> $GITHUB_STEP_SUMMARY
+        echo "- regional_targets.xlsx" >> $GITHUB_STEP_SUMMARY
+        echo "- sales_transactions.xlsx" >> $GITHUB_STEP_SUMMARY
+        echo "- support_sla.xlsx" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Output Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cleaned Data:** Available in cleaned-data artifact" >> $GITHUB_STEP_SUMMARY
+        echo "- **Reports:** Available in sanity-check-reports artifact" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -d reports ]; then
+          echo "### Report Files Generated" >> $GITHUB_STEP_SUMMARY
+          ls -lh reports/ | tail -n +2 | awk '{print "- " $9 " (" $5 ")"}' >> $GITHUB_STEP_SUMMARY
+        fi
