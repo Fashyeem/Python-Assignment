@@ -1,0 +1,6 @@
+pandas
+pyarrow
+pandera
+pyyaml
+python-dateutil
+pytest

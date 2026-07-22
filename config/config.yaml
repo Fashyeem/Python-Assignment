@@ -1,0 +1,7 @@
+# Configuration and mappings for the pipeline
+
+region_mapping:
+  NA: ["north america", "us", "usa", "canada"]
+  EMEA: ["europe", "emea", "uk"]
+
+# Add source-to-canonical mappings if needed
