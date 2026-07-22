@@ -33,7 +33,7 @@ jobs:
     
     - name: Upload cleaned data
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: cleaned-data
         path: cleaned_data/
@@ -41,7 +41,7 @@ jobs:
     
     - name: Upload sanity check report
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: sanity-check-reports
         path: reports/
