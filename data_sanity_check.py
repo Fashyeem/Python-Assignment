@@ -1,6 +1,6 @@
 """
-Data Sanity Check and Cleanup Script
-=====================================
+Data Sanity Check and Cleanup Script with Business Rules
+=========================================================
 Purpose: Perform data quality analysis and cleanup on 4 input Excel files:
     - customer_master.xlsx
     - regional_targets.xlsx
@@ -11,7 +11,13 @@ Features:
     - Load and inspect data structure
     - Identify missing values, duplicates, invalid formats
     - Detect outliers and data quality issues
-    - Generate comprehensive sanity check report
+    - Apply business rule validations:
+        * Revenue Validation: Exclude if Revenue < 0 or blank
+        * Quantity Validation: Exclude if Quantity ≤ 0
+        * Discount Processing: Set to NULL if Discount > 100
+        * Referential Integrity: Check Customer ID against customer master
+        * Ticket Status Integrity: Flag if Status='Closed' AND Resolved Date missing
+    - Generate comprehensive sanity check and validation reports
     - Create cleaned data files
 """
 
@@ -25,7 +31,7 @@ warnings.filterwarnings('ignore')
 
 
 class DataSanityChecker:
-    """Class to perform data sanity checks and cleanup operations"""
+    """Class to perform data sanity checks and cleanup operations with business rules"""
     
     def __init__(self, input_files):
         """
@@ -38,7 +44,9 @@ class DataSanityChecker:
         self.data = {}
         self.reports = {}
         self.cleaned_data = {}
+        self.validation_reports = {}
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.customer_ids = set()  # Store valid customer IDs
     
     def load_all_files(self):
         """Load all input files into DataFrames"""
@@ -57,6 +65,20 @@ class DataSanityChecker:
                 print(f"✓ {file_name}: Loaded successfully ({len(df)} rows, {len(df.columns)} columns)")
             except Exception as e:
                 print(f"✗ {file_name}: Error loading file - {str(e)}")
+    
+    def extract_customer_ids(self):
+        """Extract valid customer IDs from customer master"""
+        if 'customer_master.xlsx' in self.data:
+            df = self.data['customer_master.xlsx']
+            # Look for common customer ID column names
+            customer_id_cols = [col for col in df.columns if 'customer' in col.lower() and 'id' in col.lower()]
+            if customer_id_cols:
+                self.customer_ids = set(df[customer_id_cols[0]].dropna().unique())
+                print(f"\n✓ Extracted {len(self.customer_ids)} unique customer IDs from customer_master.xlsx")
+            else:
+                # If no standard column name found, use first column as ID
+                self.customer_ids = set(df[df.columns[0]].dropna().unique())
+                print(f"\n✓ Extracted {len(self.customer_ids)} unique IDs from first column of customer_master.xlsx")
     
     def check_missing_values(self, df, file_name):
         """Check for missing values in the dataset"""
@@ -150,6 +172,161 @@ class DataSanityChecker:
         
         return outliers
     
+    def validate_revenue(self, df, file_name):
+        """
+        Revenue Validation: Exclude records if Revenue < 0 or is blank
+        """
+        validation_report = {
+            'rule': 'Revenue Validation',
+            'invalid_records': pd.DataFrame(),
+            'records_removed': 0
+        }
+        
+        # Find revenue column
+        revenue_cols = [col for col in df.columns if 'revenue' in col.lower() or 'amount' in col.lower()]
+        
+        if not revenue_cols:
+            return validation_report
+        
+        revenue_col = revenue_cols[0]
+        df_clean = df.copy()
+        
+        # Check for negative or blank revenue
+        invalid_mask = (df_clean[revenue_col].isnull()) | (df_clean[revenue_col] < 0)
+        invalid_records = df_clean[invalid_mask]
+        
+        if len(invalid_records) > 0:
+            validation_report['invalid_records'] = invalid_records
+            validation_report['records_removed'] = len(invalid_records)
+            df_clean = df_clean[~invalid_mask]
+        
+        return validation_report, df_clean
+    
+    def validate_quantity(self, df, file_name):
+        """
+        Quantity Validation: Exclude records if Quantity ≤ 0
+        """
+        validation_report = {
+            'rule': 'Quantity Validation',
+            'invalid_records': pd.DataFrame(),
+            'records_removed': 0
+        }
+        
+        # Find quantity column
+        quantity_cols = [col for col in df.columns if 'quantity' in col.lower() or 'qty' in col.lower()]
+        
+        if not quantity_cols:
+            return validation_report, df
+        
+        quantity_col = quantity_cols[0]
+        df_clean = df.copy()
+        
+        # Check for quantity <= 0
+        invalid_mask = (df_clean[quantity_col].isnull()) | (df_clean[quantity_col] <= 0)
+        invalid_records = df_clean[invalid_mask]
+        
+        if len(invalid_records) > 0:
+            validation_report['invalid_records'] = invalid_records
+            validation_report['records_removed'] = len(invalid_records)
+            df_clean = df_clean[~invalid_mask]
+        
+        return validation_report, df_clean
+    
+    def validate_discount(self, df, file_name):
+        """
+        Discount Processing: Set to NULL if Discount > 100
+        """
+        validation_report = {
+            'rule': 'Discount Processing',
+            'invalid_records': pd.DataFrame(),
+            'records_modified': 0
+        }
+        
+        # Find discount column
+        discount_cols = [col for col in df.columns if 'discount' in col.lower()]
+        
+        if not discount_cols:
+            return validation_report, df
+        
+        discount_col = discount_cols[0]
+        df_clean = df.copy()
+        
+        # Check for discount > 100
+        invalid_mask = (df_clean[discount_col] > 100)
+        invalid_records = df_clean[invalid_mask].copy()
+        
+        if len(invalid_records) > 0:
+            validation_report['invalid_records'] = invalid_records
+            validation_report['records_modified'] = len(invalid_records)
+            df_clean.loc[invalid_mask, discount_col] = np.nan
+        
+        return validation_report, df_clean
+    
+    def validate_referential_integrity(self, df, file_name):
+        """
+        Referential Integrity: Check Customer ID exists in customer master
+        Exclude records where Customer ID is not found
+        """
+        validation_report = {
+            'rule': 'Referential Integrity (Customer ID)',
+            'invalid_records': pd.DataFrame(),
+            'records_removed': 0,
+            'customer_ids_not_found': []
+        }
+        
+        # Find customer ID column
+        customer_cols = [col for col in df.columns if 'customer' in col.lower() and 'id' in col.lower()]
+        
+        if not customer_cols or not self.customer_ids:
+            return validation_report, df
+        
+        customer_col = customer_cols[0]
+        df_clean = df.copy()
+        
+        # Check if customer IDs exist in master
+        invalid_mask = ~df_clean[customer_col].isin(self.customer_ids)
+        invalid_records = df_clean[invalid_mask]
+        
+        if len(invalid_records) > 0:
+            validation_report['invalid_records'] = invalid_records
+            validation_report['records_removed'] = len(invalid_records)
+            validation_report['customer_ids_not_found'] = list(invalid_records[customer_col].unique())
+            df_clean = df_clean[~invalid_mask]
+        
+        return validation_report, df_clean
+    
+    def validate_ticket_status(self, df, file_name):
+        """
+        Ticket Status Integrity: Flag if Status='Closed' AND Resolved Date is missing
+        """
+        validation_report = {
+            'rule': 'Ticket Status Integrity',
+            'invalid_records': pd.DataFrame(),
+            'records_flagged': 0
+        }
+        
+        # Find status and resolved date columns
+        status_cols = [col for col in df.columns if 'status' in col.lower()]
+        resolved_cols = [col for col in df.columns if 'resolved' in col.lower() and 'date' in col.lower()]
+        
+        if not status_cols or not resolved_cols:
+            return validation_report, df
+        
+        status_col = status_cols[0]
+        resolved_col = resolved_cols[0]
+        df_clean = df.copy()
+        
+        # Check for Closed status without resolved date
+        closed_mask = df_clean[status_col].str.lower() == 'closed'
+        invalid_mask = closed_mask & df_clean[resolved_col].isnull()
+        invalid_records = df_clean[invalid_mask]
+        
+        if len(invalid_records) > 0:
+            validation_report['invalid_records'] = invalid_records
+            validation_report['records_flagged'] = len(invalid_records)
+        
+        return validation_report, df_clean
+    
     def perform_sanity_check(self):
         """Perform comprehensive sanity checks on all files"""
         print("\n" + "="*80)
@@ -195,6 +372,63 @@ class DataSanityChecker:
             print(f"  - Duplicate rows: {report['duplicates']['total_duplicate_rows']}")
             print(f"  - Outliers detected: {len(report['outliers'])} numeric columns")
     
+    def apply_business_validations(self):
+        """Apply business rule validations to data"""
+        print("\n" + "="*80)
+        print("APPLYING BUSINESS RULE VALIDATIONS")
+        print("="*80)
+        
+        for file_name, df in self.data.items():
+            print(f"\n--- Validating {file_name} ---")
+            
+            df_validated = df.copy()
+            validations = []
+            
+            # Revenue Validation
+            revenue_report, df_validated = self.validate_revenue(df_validated, file_name)
+            if revenue_report['records_removed'] > 0:
+                validations.append(revenue_report)
+                print(f"  ✗ Revenue Validation: {revenue_report['records_removed']} records excluded")
+            else:
+                print(f"  ✓ Revenue Validation: Passed")
+            
+            # Quantity Validation
+            quantity_report, df_validated = self.validate_quantity(df_validated, file_name)
+            if quantity_report['records_removed'] > 0:
+                validations.append(quantity_report)
+                print(f"  ✗ Quantity Validation: {quantity_report['records_removed']} records excluded")
+            else:
+                print(f"  ✓ Quantity Validation: Passed")
+            
+            # Discount Processing
+            discount_report, df_validated = self.validate_discount(df_validated, file_name)
+            if discount_report['records_modified'] > 0:
+                validations.append(discount_report)
+                print(f"  ⚠ Discount Processing: {discount_report['records_modified']} records modified (discount set to NULL)")
+            else:
+                print(f"  ✓ Discount Processing: Passed")
+            
+            # Referential Integrity (only for sales/transaction files)
+            if 'sales' in file_name.lower() or 'transaction' in file_name.lower():
+                ref_report, df_validated = self.validate_referential_integrity(df_validated, file_name)
+                if ref_report['records_removed'] > 0:
+                    validations.append(ref_report)
+                    print(f"  ✗ Referential Integrity: {ref_report['records_removed']} records excluded (Customer ID not found)")
+                else:
+                    print(f"  ✓ Referential Integrity: Passed")
+            
+            # Ticket Status Integrity (only for support SLA files)
+            if 'support' in file_name.lower() or 'sla' in file_name.lower():
+                status_report, df_validated = self.validate_ticket_status(df_validated, file_name)
+                if status_report['records_flagged'] > 0:
+                    validations.append(status_report)
+                    print(f"  ⚠ Ticket Status Integrity: {status_report['records_flagged']} records flagged (Closed without Resolved Date)")
+                else:
+                    print(f"  ✓ Ticket Status Integrity: Passed")
+            
+            self.validation_reports[file_name] = validations
+            self.data[file_name] = df_validated
+    
     def clean_data(self):
         """Clean data and create cleaned versions"""
         print("\n" + "="*80)
@@ -226,7 +460,8 @@ class DataSanityChecker:
             
             # Strip whitespace from string columns
             for col in categorical_cols:
-                df_clean[col] = df_clean[col].str.strip()
+                if df_clean[col].dtype == 'object':
+                    df_clean[col] = df_clean[col].astype(str).str.strip()
             
             self.cleaned_data[file_name] = df_clean
             
@@ -298,6 +533,48 @@ class DataSanityChecker:
         
         return "\n".join(report_text)
     
+    def generate_validation_report(self):
+        """Generate detailed validation report for business rules"""
+        report_text = []
+        report_text.append("="*80)
+        report_text.append("BUSINESS RULE VALIDATION REPORT")
+        report_text.append("="*80)
+        report_text.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        for file_name, validations in self.validation_reports.items():
+            if not validations:
+                continue
+            
+            report_text.append(f"\n{'='*80}")
+            report_text.append(f"FILE: {file_name}")
+            report_text.append(f"{'='*80}\n")
+            
+            for validation in validations:
+                report_text.append(f"\nValidation Rule: {validation['rule']}")
+                report_text.append("-" * 60)
+                
+                if 'records_removed' in validation:
+                    report_text.append(f"  Records Removed: {validation['records_removed']}")
+                
+                if 'records_modified' in validation:
+                    report_text.append(f"  Records Modified: {validation['records_modified']}")
+                
+                if 'records_flagged' in validation:
+                    report_text.append(f"  Records Flagged: {validation['records_flagged']}")
+                
+                if 'customer_ids_not_found' in validation and validation['customer_ids_not_found']:
+                    report_text.append(f"  Invalid Customer IDs Found: {validation['customer_ids_not_found']}")
+                
+                if not validation['invalid_records'].empty:
+                    report_text.append(f"\n  Sample of Invalid Records (first 5):")
+                    report_text.append(validation['invalid_records'].head().to_string(index=False))
+        
+        report_text.append(f"\n\n{'='*80}")
+        report_text.append("END OF VALIDATION REPORT")
+        report_text.append(f"{'='*80}\n")
+        
+        return "\n".join(report_text)
+    
     def save_cleaned_files(self, output_dir="cleaned_data"):
         """Save cleaned data to output directory"""
         print("\n" + "="*80)
@@ -322,30 +599,40 @@ class DataSanityChecker:
             except Exception as e:
                 print(f"✗ Error saving {file_name}: {str(e)}")
     
-    def save_report(self, output_dir="reports"):
-        """Save the sanity check report to file"""
+    def save_reports(self, output_dir="reports"):
+        """Save both sanity check and validation reports to files"""
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         
-        report_path = os.path.join(output_dir, f"sanity_check_report_{self.timestamp}.txt")
+        # Save sanity check report
+        sanity_report_path = os.path.join(output_dir, f"sanity_check_report_{self.timestamp}.txt")
+        sanity_report_text = self.generate_report()
         
-        report_text = self.generate_report()
+        with open(sanity_report_path, 'w') as f:
+            f.write(sanity_report_text)
         
-        with open(report_path, 'w') as f:
-            f.write(report_text)
+        print(f"✓ Sanity Check Report saved: {sanity_report_path}\n")
+        print(sanity_report_text)
         
-        print(f"✓ Report saved: {report_path}\n")
-        print(report_text)
+        # Save validation report
+        validation_report_path = os.path.join(output_dir, f"validation_report_{self.timestamp}.txt")
+        validation_report_text = self.generate_validation_report()
         
-        return report_path
+        with open(validation_report_path, 'w') as f:
+            f.write(validation_report_text)
+        
+        print(f"\n✓ Validation Report saved: {validation_report_path}\n")
+        print(validation_report_text)
     
     def run_all_checks(self):
         """Run all checks in sequence"""
         self.load_all_files()
+        self.extract_customer_ids()
         self.perform_sanity_check()
+        self.apply_business_validations()
         self.clean_data()
         self.save_cleaned_files()
-        self.save_report()
+        self.save_reports()
 
 
 def main():
@@ -364,11 +651,12 @@ def main():
     checker.run_all_checks()
     
     print("\n" + "="*80)
-    print("DATA SANITY CHECK COMPLETED SUCCESSFULLY!")
+    print("DATA SANITY CHECK & VALIDATION COMPLETED SUCCESSFULLY!")
     print("="*80)
     print("\nOutput files:")
     print("  - cleaned_data/: Directory containing cleaned Excel files")
-    print("  - reports/: Directory containing detailed sanity check reports")
+    print("  - reports/sanity_check_report_*.txt: Detailed sanity check report")
+    print("  - reports/validation_report_*.txt: Business rule validation report")
     print("="*80 + "\n")
 
 
